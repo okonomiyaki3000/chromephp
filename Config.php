@@ -27,9 +27,10 @@ class Config
 	 * @var  array
 	 */
 	protected static $settings = [
-		BACKTRACE_LEVEL  => 2,
-		BACKTRACE_FORMAT => '{function_full:30} {file} : {line}',
-		BASE_PATH        => '',
+		BACKTRACE_LEVEL     => 2,
+		BACKTRACE_FORMAT    => '{function_full:30} {file} : {line}',
+		BASE_PATH           => '',
+		BACKTRACE_COLLAPSED => false,
 	];
 
     /**

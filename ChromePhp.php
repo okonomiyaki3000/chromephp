@@ -17,7 +17,10 @@
 
 namespace ChromePhp;
 
+include_once 'Backtrace.php';
+include_once 'Config.php';
 include_once 'Constants.php';
+include_once 'Entry.php';
 
 /**
  * Server Side Chrome PHP debugger class
@@ -33,7 +36,7 @@ class ChromePhp
     protected $_json = [
         'version' => VERSION,
         'columns' => ['log', 'backtrace', 'type'],
-        'rows'    => ['log', 'backtrace', 'type'],
+        'rows'    => [],
     ];
 
     /**
@@ -152,19 +155,19 @@ class ChromePhp
 
         $backtrace = debug_backtrace(false);
         $level = Config::get(BACKTRACE_LEVEL);
-        $basepath = Config::get(BASE_PATH);
+		$startGroup = Config::get(BACKTRACE_COLLAPSED) ? LOG_TYPE_GROUP_COLLAPSED : LOG_TYPE_GROUP;
 
-        $logger->_addRow(['ChromePhp.trace()'], null, LOG_TYPE_GROUP);
+		$args = array_map('json_encode', func_get_args());
+		$title = sprintf('%1$s.%2$s( %3$s )', __CLASS__, __FUNCTION__, implode(', ', $args));
+        $logger->_addRow([$title], null, $startGroup);
 
-        for ($i = $level - 1, $l = count($backtrace); $i < $l; $i++)
-        {
-            $backtrace_message = isset($backtrace[$i]) ? $logger->_formatBacktrace($backtrace[$i]) : 'unknown';
-            $logger->_addRow([], $backtrace_message, LOG_TYPE_LOG, false);
-        }
+		foreach (array_slice($backtrace, $level - 1) as &$bt)
+		{
+			$btMessage = new Backtrace($bt);
+			$logger->_addRow([], (string) $btMessage, LOG_TYPE_LOG, false);
+		}
 
-        $logger->_addRow([], null, LOG_TYPE_GROUP_END);
-
-        return $logger;
+        return $logger->_addRow([], null, LOG_TYPE_GROUP_END)->writeHeader();
     }
 
     /**
@@ -185,145 +188,26 @@ class ChromePhp
         }
 
         $logger->_processed = [];
-        $logs = array_map([$logger, '_convert'], $args);
+        $logs = array_map([__NAMESPACE__ . '\\Entry', 'prepare'], $args);
 
         $backtrace = debug_backtrace(false);
         $level = Config::get(BACKTRACE_LEVEL);
 
-        $backtrace_message = isset($backtrace[$level]) ? $logger->_formatBacktrace($backtrace[$level]) : 'unknown';
+        $backtrace_message = new Backtrace($backtrace[$level]);
 
-        $logger->_addRow($logs, $backtrace_message, $type);
-
-        return $logger;
+        return $logger->_addRow($logs, (string) $backtrace_message, $type)->writeHeader();
     }
 
-    protected function _formatBacktrace($values)
-    {
-        $default = ['function' => '', 'line' => '', 'file' => '', 'class' => '', 'type' => ''];
-        $values = array_merge($default, $values);
-        $values['function_full'] = $values['type'] ? $values['class'] . $values['type'] . $values['function'] : $values['function'];
-        $values['file_full'] = $values['file'];
-
-        $format = $this->getSetting(BACKTRACE_FORMAT);
-        $basepath = $this->getSetting(BASE_PATH);
-
-        if ($basepath && strpos($values['file'], $basepath) === 0)
-		{
-            $values['file'] = substr($values['file'], strlen($basepath));
-        }
-
-        $this->values = $values;
-        $fn = [$this, '_formatBacktraceCallback'];
-
-        return preg_replace_callback('/{(\w+)?(:(\d+))?}/', $fn, $format);
-    }
-
-    protected function _formatBacktraceCallback($matches)
-    {
-        $s = isset($this->values[$matches[1]]) ? $this->values[$matches[1]] : '';
-
-        return isset($matches[3]) ? str_pad($s, (int) $matches[3], ' ', \STR_PAD_RIGHT) : $s;
-    }
-
-    /**
-     * converts an object to a better format for logging
-     *
-     * @param  Object
-     *
-     * @return  array
-     */
-    protected function _convert($object)
-    {
-        // if this isn't an object then just return it
-        if (!is_object($object))
-		{
-            return $object;
-        }
-
-        //Mark this object as processed so we don't convert it twice and it
-        //Also avoid recursion when objects refer to each other
-        $this->_processed[] = $object;
-
-        $object_as_array = [];
-
-        // first add the class name
-        $object_as_array['___class_name'] = get_class($object);
-
-        // loop through object vars
-        $object_vars = get_object_vars($object);
-
-		foreach ($object_vars as $key => $value)
-		{
-            // same instance as parent object
-            if ($value === $object || in_array($value, $this->_processed, true))
-			{
-                $value = 'recursion - parent object [' . get_class($value) . ']';
-            }
-
-            $object_as_array[$key] = $this->_convert($value);
-        }
-
-        $reflection = new \ReflectionClass($object);
-
-        // loop through the properties and add those
-        foreach ($reflection->getProperties() as $property)
-		{
-            // if one of these properties was already added above then ignore it
-            if (array_key_exists($property->getName(), $object_vars))
-			{
-                continue;
-            }
-
-			$type = $this->_getPropertyKey($property);
-            $property->setAccessible(true);
-            $value = $property->getValue($object);
-
-            // same instance as parent object
-            if ($value === $object || in_array($value, $this->_processed, true))
-			{
-                $value = 'recursion - parent object [' . get_class($value) . ']';
-            }
-
-            $object_as_array[$type] = $this->_convert($value);
-        }
-
-        return $object_as_array;
-    }
-
-    /**
-     * takes a reflection property and returns a nicely formatted key of the property name
-     *
-     * @param  ReflectionProperty
-     *
-     * @return  string
-     */
-    protected function _getPropertyKey(ReflectionProperty $property)
-    {
-        $static = $property->isStatic() ? ' static' : '';
-
-        if ($property->isPublic())
-		{
-            return 'public' . $static . ' ' . $property->getName();
-        }
-
-        if ($property->isProtected())
-		{
-            return 'protected' . $static . ' ' . $property->getName();
-        }
-
-        if ($property->isPrivate())
-		{
-            return 'private' . $static . ' ' . $property->getName();
-        }
-    }
-
-    /**
+	/**
      * adds a value to the data array
-     *
-     * @param  mixed
-     *
-     * @return  void
-     */
+	 *
+	 * @param   array    $logs             [description]
+	 * @param   string   $backtrace        [description]
+	 * @param   string   $type             [description]
+	 * @param   boolean  $uniqueBacktrace  [description]
+	 *
+     * @return  ChromePhp
+	 */
     protected function _addRow(array $logs, $backtrace, $type, $uniqueBacktrace = true)
     {
         // if this is logged on the same line for example in a loop, set it to null to save space
@@ -345,13 +229,15 @@ class ChromePhp
         }
 
         $this->_json['rows'][] = [$logs, $backtrace, $type];
-        $this->_writeHeader($this->_json);
+
+		return $this;
     }
 
-    protected function _writeHeader($data)
+    protected function writeHeader()
     {
-        header(HEADER_NAME . ': ' . $this->_encode($data));
-        header(HEADER_NAME . '-DEF: ' . $this->_compress($data));
+        header(HEADER_NAME . ': ' . $this->_encode($this->_json));
+
+		return $this;
     }
 
     /**
@@ -364,18 +250,6 @@ class ChromePhp
     protected function _encode($data)
     {
         return base64_encode(utf8_encode(json_encode($data)));
-    }
-
-    /**
-     * encodes the data to be sent along with the request
-     *
-     * @param  array  $data
-     *
-     * @return string
-     */
-    protected function _compress($data)
-    {
-        return base64_encode(gzdeflate(utf8_encode(json_encode($data))));
     }
 
     /**

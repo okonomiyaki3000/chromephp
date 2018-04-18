@@ -28,10 +28,16 @@ const VERSION = '4.1.0';
  * @var string
  */
 const HEADER_NAME = 'X-ChromeLogger-Data';
+
 /**
  * @var string
  */
 const BACKTRACE_LEVEL = 'backtrace_level';
+
+/**
+ * @var string
+ */
+const BACKTRACE_COLLAPSED = 'backtrace_collapsed';
 
 /**
  * @var string
